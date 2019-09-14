@@ -12,12 +12,10 @@ pub struct Page {
     pub(super) size: usize,
 }
 
-pub const PAGE_SIZE: usize = 4096;
-
 impl Page {
     #[inline]
     pub fn new(x: usize) -> Page {
-        let data = unsafe { malloc(x) };
+        let data = mmap(x, ProtType::Writable) as *mut u8;
         unsafe {
             for i in 0..x {
                 *data.offset(i as _) = 0;
@@ -250,9 +248,7 @@ impl Space {
     pub fn clear(&mut self) {
         self.size = 0;
         for page in self.pages.iter() {
-            unsafe {
-                free(page.data);
-            }
+            munmap(page.data, page_size() as usize);
         }
         self.pages.clear();
     }
@@ -536,8 +532,10 @@ impl HValue {
                 HeapTag::Map => {
                     size += (1 + ((*self.as_::<HMap>()).size() as usize) << 1) * PTR_SIZE;
                 }
-
-                _ => unimplemented!(),
+                HeapTag::ExternData => {
+                    size += std::mem::size_of::<usize>() + HCData::size(self.addr()) as usize;
+                }
+                _ => unreachable!(),
             }
 
             self.increment_generation();
@@ -801,9 +799,9 @@ impl HNumber {
 }
 
 impl HArray {
-    pub fn length(obj: *mut u8, shrink: bool) -> usize {
+    pub fn length(obj: *mut u8, shrink: bool) -> isize {
         unsafe {
-            let mut result = *(obj.offset(Self::LENGTH_OFFSET) as *mut usize);
+            let mut result = *(obj.offset(Self::LENGTH_OFFSET) as *mut isize);
             if shrink {
                 let mut shrinked = result;
                 let mut shrinked_ptr: *mut u8;
@@ -831,9 +829,9 @@ impl HArray {
         }
     }
 
-    pub fn set_length(obj: *mut u8, len: usize) {
+    pub fn set_length(obj: *mut u8, len: isize) {
         unsafe {
-            *(obj.offset(Self::LENGTH_OFFSET) as *mut usize) = len;
+            *(obj.offset(Self::LENGTH_OFFSET) as *mut isize) = len;
         }
     }
 
@@ -990,5 +988,164 @@ impl HValTrait for HNil {
 impl HNil {
     pub fn new() -> *mut u8 {
         return Self::TAG as u8 as *mut u8;
+    }
+}
+
+#[derive(Copy, Clone, Debug, Hash, PartialEq, PartialOrd, Ord, Eq)]
+pub struct HCData;
+
+impl HValTrait for HCData {
+    const TAG: HeapTag = HeapTag::ExternData;
+}
+
+impl HCData {
+    pub fn new(heap: &mut Heap, size: usize) -> *mut u8 {
+        unsafe {
+            let d = heap.allocate_tagged(
+                HeapTag::ExternData,
+                Tenure::New,
+                std::mem::size_of::<usize>() + size,
+            );
+            *(d.offset(Self::SIZE_OFFSET) as *mut u32) = size as u32;
+            return d;
+        }
+    }
+
+    pub fn size(addr: *mut u8) -> u32 {
+        return unsafe { *(addr.offset(Self::SIZE_OFFSET) as *mut u32) };
+    }
+    pub fn data(addr: *mut u8) -> *mut u8 {
+        return unsafe { addr.offset(Self::DATA_OFFSET) };
+    }
+
+    pub const SIZE_OFFSET: isize = interior_offset(1);
+    pub const DATA_OFFSET: isize = interior_offset(2);
+}
+
+#[cfg(not(target_family = "windows"))]
+use libc;
+
+use std::ptr;
+
+static mut PAGE_SIZE: u32 = 0;
+static mut PAGE_SIZE_BITS: u32 = 0;
+
+pub(crate) fn init_page_size() {
+    unsafe {
+        PAGE_SIZE = determine_page_size();
+        assert!((PAGE_SIZE & (PAGE_SIZE - 1)) == 0);
+    }
+}
+
+#[cfg(target_family = "unix")]
+pub(crate) fn determine_page_size() -> u32 {
+    let val = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+
+    if val <= 0 {
+        panic!("could not determine page size.");
+    }
+
+    val as u32
+}
+
+#[cfg(target_family = "windows")]
+#[allow(deprecated)]
+pub(crate) fn determine_page_size() -> u32 {
+    use std::mem;
+    use winapi::um::sysinfoapi::{GetSystemInfo, SYSTEM_INFO};
+
+    unsafe {
+        let mut system_info: SYSTEM_INFO = mem::uninitialized();
+        GetSystemInfo(&mut system_info);
+
+        system_info.dwPageSize
+    }
+}
+
+pub(crate) fn page_size() -> u32 {
+    unsafe { PAGE_SIZE }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub(crate) enum ProtType {
+    Executable,
+    Writable,
+    None,
+}
+
+impl ProtType {
+    #[cfg(target_family = "unix")]
+    fn to_libc(self) -> libc::c_int {
+        match self {
+            ProtType::None => 0,
+            ProtType::Writable => libc::PROT_READ | libc::PROT_WRITE,
+            ProtType::Executable => libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+        }
+    }
+}
+
+#[cfg(target_family = "unix")]
+pub(crate) fn mmap(size: usize, prot: ProtType) -> *const u8 {
+    let ptr = unsafe {
+        libc::mmap(
+            ptr::null_mut(),
+            size,
+            prot.to_libc(),
+            libc::MAP_PRIVATE | libc::MAP_ANON,
+            -1,
+            0,
+        ) as *mut libc::c_void
+    };
+
+    if ptr == libc::MAP_FAILED {
+        panic!("mmap failed");
+    }
+
+    ptr as *const u8
+}
+
+#[cfg(target_family = "windows")]
+pub(crate) fn mmap(size: usize, exec: ProtType) -> *const u8 {
+    use winapi::um::memoryapi::VirtualAlloc;
+    use winapi::um::winnt::{MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_READWRITE};
+
+    let prot = if exec == ProtType::Executable {
+        PAGE_EXECUTE_READWRITE
+    } else {
+        PAGE_READWRITE
+    };
+
+    let ptr = unsafe { VirtualAlloc(ptr::null_mut(), size, MEM_COMMIT | MEM_RESERVE, prot) };
+
+    if ptr.is_null() {
+        use winapi::um::errhandlingapi::GetLastError;
+        panic!(
+            "VirtualAlloc failed with error code '{:x}',size '{}'",
+            unsafe { GetLastError() },
+            size
+        );
+    }
+
+    ptr as *const u8
+}
+
+#[cfg(target_family = "unix")]
+pub(crate) fn munmap(ptr: *const u8, size: usize) {
+    let res = unsafe { libc::munmap(ptr as *mut libc::c_void, size) };
+
+    if res != 0 {
+        panic!("munmap failed");
+    }
+}
+
+#[cfg(target_family = "windows")]
+pub(crate) fn munmap(ptr: *const u8, _size: usize) {
+    use winapi::um::memoryapi::VirtualFree;
+    use winapi::um::winnt::MEM_RELEASE;
+
+    let res = unsafe { VirtualFree(ptr as *mut _, 0, MEM_RELEASE) };
+
+    if res == 0 {
+        panic!("VirtualFree failed");
     }
 }

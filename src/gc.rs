@@ -155,11 +155,11 @@ impl GC {
                     break;
                 }
                 let value = *frame;
-                //println!("{:p} {:p}", frame, value);
                 if value.is_null() {
                     break;
                 }
-                if value != HNil::new() && !HValue::is_unboxed(value) {
+                //println!("{:p} {:p}", frame, value);
+                if value != HNil::new() && !HValue::is_unboxed(value) && !value.is_null() {
                     println!("{:p} {:p}", value, frame);
                     self.push_grey(HValue::cast(value), frame);
                     self.process_grey();
