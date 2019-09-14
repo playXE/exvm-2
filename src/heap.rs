@@ -1079,7 +1079,7 @@ impl ProtType {
         match self {
             ProtType::None => 0,
             ProtType::Writable => libc::PROT_READ | libc::PROT_WRITE,
-            ProtType::Executable => libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+            ProtType::Executable => libc::PROT_READ | libc::PROT_EXEC,
         }
     }
 }
