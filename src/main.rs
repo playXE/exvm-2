@@ -6,9 +6,12 @@ use exvm::heap::*;
 
 fn main() {
     let mut h = Heap::new(4096 * 2);
+    h.needs_gc = GCType::NewSpace;
     let mut gc = GC::new(h.val);
     let num = HNumber::newf(&mut h, Tenure::New, 3.14);
     let _num2 = HObject::new_empty(&mut h, 2);
-    let _num2 = HNumber::newf(&mut h, Tenure::New, 3.14);
     gc.collect_garbage(&num as *const _ as *mut _);
+    unsafe {
+        println!("{}", (*HValue::cast(num)).generation());
+    }
 }

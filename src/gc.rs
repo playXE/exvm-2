@@ -197,25 +197,28 @@ impl GC {
                             self.black.push_back(value);
                             self.visit_value(value.value);
                         }
+                        continue;
                     }
-                    continue;
-                }
-                assert!(!(*value.value).is_soft_gc_marked());
-                let hvalue;
-                if self.gc_type == GCType::NewSpace {
-                    hvalue = (*value.value).copy_to(
-                        &mut *(*self.heap).old_space,
-                        self.tmp_space.as_mut().unwrap(),
-                    );
-                } else {
-                    hvalue = (*value.value).copy_to(
-                        self.tmp_space.as_mut().unwrap(),
-                        &mut *(*self.heap).new_space,
-                    );
-                }
 
-                value.relocate((*hvalue).addr());
-                self.visit_value(hvalue);
+                    assert!(!(*value.value).is_soft_gc_marked());
+                    let hvalue;
+                    if self.gc_type == GCType::NewSpace {
+                        hvalue = (*value.value).copy_to(
+                            &mut *(*self.heap).old_space,
+                            self.tmp_space.as_mut().unwrap(),
+                        );
+                    } else {
+                        hvalue = (*value.value).copy_to(
+                            self.tmp_space.as_mut().unwrap(),
+                            &mut *(*self.heap).new_space,
+                        );
+                    }
+
+                    value.relocate((*hvalue).addr());
+                    self.visit_value(hvalue);
+                } else {
+                    value.relocate((*value.value).get_gc_mark());
+                }
             }
         }
     }

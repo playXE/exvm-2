@@ -497,7 +497,7 @@ impl HValue {
         }
     }
     pub fn copy_to(&self, old_space: &mut Space, new_space: &mut Space) -> *mut HValue {
-        assert!(Self::is_unboxed(self.addr()));
+        assert!(!Self::is_unboxed(self.addr()));
         const PTR_SIZE: usize = std::mem::size_of::<usize>();
         unsafe {
             let mut size = PTR_SIZE;
