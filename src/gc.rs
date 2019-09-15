@@ -13,6 +13,7 @@ impl GCValue {
                 *self.slot = address;
             }
         }
+        println!("{:?}->{:?}", self.value, address);
         unsafe {
             if (*self.value).is_gc_marked() {
                 (*self.value).set_gc_mark(address);
@@ -125,7 +126,7 @@ impl GC {
 
     fn handle_weak_refs(&mut self) {
         unsafe {
-            (*self.heap).weak_references.retain(|key, val| {
+            (*self.heap).weak_references.retain(|_, val| {
                 let value: &mut HValueWeakRef = val;
                 if !(*value.value).is_gc_marked() {
                     if self.is_in_current_space(value.value) {
@@ -158,9 +159,24 @@ impl GC {
                 if value.is_null() {
                     break;
                 }
-                //println!("{:p} {:p}", frame, value);
-                if value != HNil::new() && !HValue::is_unboxed(value) && !value.is_null() {
-                    println!("{:p} {:p}", value, frame);
+                println!(
+                    "stack ptr {:p} in {} space",
+                    value,
+                    if (*(*self.heap).new_space).contains_pointer(value) {
+                        "new"
+                    } else if (*(*self.heap).old_space).contains_pointer(value) {
+                        "old"
+                    } else {
+                        "none"
+                    }
+                );
+
+                if value != HNil::new()
+                    && !HValue::is_unboxed(value)
+                    && !value.is_null()
+                    && ((*(*self.heap).new_space).contains_pointer(value)
+                        || (*(*self.heap).old_space).contains_pointer(value))
+                {
                     self.push_grey(HValue::cast(value), frame);
                     self.process_grey();
                 }
@@ -189,6 +205,7 @@ impl GC {
                 {
                     continue;
                 }
+                //println!("processing {:?}", (*value.value).tag());
 
                 if !(*value.value).is_gc_marked() {
                     if !self.is_in_current_space(value.value) {

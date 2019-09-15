@@ -15,12 +15,9 @@ pub struct Page {
 impl Page {
     #[inline]
     pub fn new(x: usize) -> Page {
-        let data = mmap(x, ProtType::Writable) as *mut u8;
-        unsafe {
-            for i in 0..x {
-                *data.offset(i as _) = 0;
-            }
-        }
+        let data = unsafe { malloc(x) }; //mmap(x, ProtType::Writable) as *mut u8;
+                                         //println!("Page ptr {:p}", data);
+
         Page {
             size: x,
             data,
@@ -124,7 +121,7 @@ impl Heap {
         };
         self.references.insert(reference as _, ref_);
     }
-
+    #[inline(never)]
     pub fn allocate_tagged(&mut self, tag: HeapTag, tenure: Tenure, bytes: usize) -> *mut u8 {
         let result = unsafe { self.space(tenure).allocate(bytes + 8) };
         let mut qtag = tag as u8 as isize;
@@ -204,6 +201,19 @@ impl Space {
         self.limit = (&page.limit) as *const *mut u8 as *mut *mut _;
     }
 
+    pub fn contains_pointer(&self, ptr: *mut u8) -> bool {
+        unsafe {
+            for page in self.pages.iter() {
+                if page.data.offset(1) as usize <= ptr as usize
+                    && page.data.offset(page_size() as _) as usize > ptr as usize
+                {
+                    return true;
+                }
+            }
+            false
+        }
+    }
+
     pub fn allocate(&mut self, bytes: usize) -> *mut u8 {
         assert!(bytes != 0);
         let even_bytes = bytes + (bytes & 0x01);
@@ -248,7 +258,7 @@ impl Space {
     pub fn clear(&mut self) {
         self.size = 0;
         for page in self.pages.iter() {
-            munmap(page.data, page_size() as usize);
+            //munmap(page.data, page_size() as usize);
         }
         self.pages.clear();
     }
@@ -486,6 +496,10 @@ impl HValue {
                     size += (1 + ((*self.as_::<HMap>()).size() as usize) << 1) * PTR_SIZE;
                 }
 
+                HeapTag::ExternData => {
+                    size += std::mem::size_of::<usize>() + HCData::size(self.addr()) as usize;
+                }
+
                 _ => (),
             }
 
@@ -609,6 +623,35 @@ impl HValue {
     }*/
 }
 #[derive(Copy, Clone, Debug, Hash, PartialEq, PartialOrd, Ord, Eq)]
+pub struct HBoolean;
+
+impl HValTrait for HBoolean {
+    const TAG: HeapTag = HeapTag::Boolean;
+}
+
+impl HBoolean {
+    pub fn new(heap: &mut Heap, tenure: Tenure, value: bool) -> *mut u8 {
+        unsafe {
+            let result = heap.allocate_tagged(HeapTag::Boolean, tenure, 8);
+            *(result.offset(Self::VALUE_OFFSET)) = if value { 1 } else { 0 };
+            result
+        }
+    }
+
+    pub fn value(addr: *mut u8) -> bool {
+        return unsafe { *(addr.offset(Self::VALUE_OFFSET)) != 0 };
+    }
+    pub fn is_true(&self) -> bool {
+        HBoolean::value(self.addr())
+    }
+    pub fn is_false(&self) -> bool {
+        HBoolean::value(self.addr())
+    }
+
+    pub const VALUE_OFFSET: isize = interior_offset(1);
+}
+
+#[derive(Copy, Clone, Debug, Hash, PartialEq, PartialOrd, Ord, Eq)]
 pub struct HContext;
 
 impl HValTrait for HContext {
@@ -672,6 +715,26 @@ impl HString {
     pub const RIGHT_CONS_OFFSET: isize = interior_offset(4);
     pub const MIN_CONS_LEN: usize = 24;
 
+    pub fn new(heap: &mut Heap, tenure: Tenure, length: usize, value: Option<&str>) -> *mut u8 {
+        unsafe {
+            let result = heap.allocate_tagged(
+                HeapTag::String,
+                tenure,
+                length + 3 * std::mem::size_of::<usize>(),
+            );
+            *(result.offset(Self::HASH_OFFSET) as *mut isize) = 0;
+            *(result.offset(Self::LENGTH_OFFSET) as *mut usize) = length;
+            if let Some(value) = value {
+                std::ptr::copy_nonoverlapping(
+                    value.as_bytes().as_ptr(),
+                    result.offset(Self::VALUE_OFFSET),
+                    length,
+                );
+            }
+            result
+        }
+    }
+
     pub fn static_length(addr: *mut u8) -> u32 {
         return unsafe { *(addr.offset(HString::LENGTH_OFFSET) as *mut u32) };
     }
@@ -690,6 +753,77 @@ impl HString {
         unsafe { addr.offset(Self::RIGHT_CONS_OFFSET) as *mut *mut u8 }
     }
 
+    pub fn flatten_cons(mut addr: *mut u8, mut buffer: *mut u8) -> *mut u8 {
+        unsafe {
+            while !addr.is_null() {
+                match HValue::get_repr(addr) {
+                    0x00 => {
+                        let len = HString::static_length(addr);
+                        std::ptr::copy_nonoverlapping(
+                            addr.offset(Self::VALUE_OFFSET),
+                            buffer,
+                            len as _,
+                        );
+                        return buffer.offset(len as _);
+                    }
+                    0x01 => {
+                        let left = Self::left_cons(addr);
+                        let right = Self::right_cons(addr);
+                        if right == HNil::new() {
+                            addr = left;
+                        } else {
+                            if HString::static_length(left) > HString::static_length(right) {
+                                Self::flatten_cons(
+                                    right,
+                                    buffer.offset(HString::static_length(left) as _),
+                                );
+                                addr = left;
+                            } else {
+                                buffer = Self::flatten_cons(left, buffer);
+                                addr = right;
+                            }
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            return buffer;
+        }
+    }
+
+    pub fn value_as_str(heap: *mut Heap, addr: *mut u8) -> String {
+        let val = Self::value(heap, addr);
+        let len = Self::static_length(addr);
+
+        let slice = unsafe { std::slice::from_raw_parts(val, len as _) };
+        return String::from_utf8(slice.to_vec()).unwrap();
+    }
+
+    pub fn value(heap: *mut Heap, addr: *mut u8) -> *mut u8 {
+        unsafe {
+            match HValue::get_repr(addr) {
+                0x00 => return addr.offset(Self::VALUE_OFFSET),
+                0x01 => {
+                    if Self::right_cons(addr) == HNil::new() {
+                        return HString::value(heap, Self::left_cons(addr));
+                    } else {
+                        let result = HString::new(
+                            &mut *heap,
+                            Tenure::New,
+                            HString::static_length(addr) as _,
+                            None,
+                        );
+                        let value = HString::value(heap, result);
+                        HString::flatten_cons(addr, value);
+                        *Self::right_cons_slot(addr) = HNil::new();
+                        *Self::left_cons_slot(addr) = result;
+                        return value;
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
     pub fn length(&self) -> u32 {
         Self::static_length(self.addr())
     }
@@ -709,18 +843,21 @@ impl HMap {
                 Tenure::New,
                 ((size << 1) + 1) * std::mem::size_of::<usize>(),
             );
+            *(map.offset(Self::SIZE_OFFSET) as *mut usize) = size as usize;
             size = (size << 1) * std::mem::size_of::<usize>();
             memset(map.offset(Self::SPACE_OFFSET), 0x00, size);
-            for i in 0..size {
+            let mut i = 0;
+            while i < size {
                 *map.offset(i as isize + Self::SPACE_OFFSET as isize) = HeapTag::Nil as u8;
+                i += std::mem::size_of::<usize>();
             }
-
             map
         }
     }
 
     pub fn size(&self) -> u32 {
-        return unsafe { *(self.addr().offset(Self::SIZE_OFFSET) as *mut u32) };
+        let size = unsafe { *(self.addr().offset(Self::SIZE_OFFSET) as *mut usize) } as u32;
+        size
     }
 
     pub fn get_slot_address(&self, index: u32) -> *mut *mut u8 {
@@ -731,7 +868,7 @@ impl HMap {
         };
     }
     pub fn is_empty_slot(&self, index: u32) -> bool {
-        unsafe { *Self.get_slot_address(index) == HNil::new() }
+        unsafe { *self.get_slot_address(index) == HNil::new() }
     }
     pub fn get_slot(&self, index: u32) -> *mut HValue {
         return unsafe { HValue::cast(*self.get_slot_address(index)) };
@@ -748,12 +885,14 @@ impl HMap {
     pub const SIZE_OFFSET: isize = interior_offset(1);
 }
 #[derive(Copy, Clone, Debug, Hash, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
 pub struct HArray;
 
 impl HValTrait for HArray {
     const TAG: HeapTag = HeapTag::Array;
 }
 #[derive(Copy, Clone, Debug, Hash, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
 pub struct HNumber;
 
 impl HNumber {
@@ -829,6 +968,14 @@ impl HArray {
         }
     }
 
+    pub fn is_dense(addr: *mut u8) -> bool {
+        unsafe {
+            let size = (*(addr as *mut HObject)).map() as *mut HMap;
+            let size = (*size).size();
+            return size <= Self::DENSE_LENGTH_MAX as u32;
+        }
+    }
+
     pub fn set_length(obj: *mut u8, len: isize) {
         unsafe {
             *(obj.offset(Self::LENGTH_OFFSET) as *mut isize) = len;
@@ -840,6 +987,7 @@ impl HArray {
     pub const LENGTH_OFFSET: isize = interior_offset(4);
 }
 #[derive(Copy, Clone, Debug, Hash, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
 pub struct HObject;
 
 impl HValTrait for HObject {
@@ -848,16 +996,14 @@ impl HValTrait for HObject {
 
 impl HObject {
     pub fn new_empty(heap: &mut Heap, size: usize) -> *mut u8 {
-        unsafe {
-            let obj = heap.allocate_tagged(
-                HeapTag::Object,
-                Tenure::New,
-                3 * std::mem::size_of::<usize>(),
-            );
-            HObject::init(heap, obj, size);
+        let obj = heap.allocate_tagged(
+            HeapTag::Object,
+            Tenure::New,
+            3 * std::mem::size_of::<usize>(),
+        );
+        HObject::init(heap, obj, size);
 
-            obj
-        }
+        obj
     }
     pub fn init(heap: &mut Heap, obj: *mut u8, size: usize) {
         unsafe {
@@ -901,11 +1047,32 @@ impl HObject {
         Self::proto_slot_s(self.addr())
     }
 
+    pub fn mask_slot(addr: *mut u8) -> *mut u32 {
+        unsafe { return addr.offset(Self::MASK_OFFSET) as *mut _ }
+    }
+
+    pub fn mask(addr: *mut u8) -> u32 {
+        unsafe { *Self::mask_slot(addr) }
+    }
+
+    pub fn lookup_property(
+        heap: *mut Heap,
+        addr: *mut u8,
+        key: *mut u8,
+        insert: bool,
+    ) -> *mut *mut u8 {
+        unsafe {
+            let offset = crate::runtime::rt_lookup_property(heap, addr, key, insert);
+            return HObject::map_s(addr).offset(offset as _) as *mut *mut u8;
+        }
+    }
+
     pub const MASK_OFFSET: isize = interior_offset(1);
     pub const MAP_OFFSET: isize = interior_offset(2);
     pub const PROTO_OFFSET: isize = interior_offset(3);
 }
 #[derive(Copy, Clone, Debug, Hash, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
 pub struct HFunction;
 
 impl HValTrait for HFunction {
@@ -979,6 +1146,7 @@ pub struct HValueWeakRef {
 }
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
 pub struct HNil;
 
 impl HValTrait for HNil {
@@ -992,6 +1160,7 @@ impl HNil {
 }
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
 pub struct HCData;
 
 impl HValTrait for HCData {
@@ -1030,7 +1199,7 @@ use std::ptr;
 static mut PAGE_SIZE: u32 = 0;
 static mut PAGE_SIZE_BITS: u32 = 0;
 
-pub(crate) fn init_page_size() {
+pub fn init_page_size() {
     unsafe {
         PAGE_SIZE = determine_page_size();
         assert!((PAGE_SIZE & (PAGE_SIZE - 1)) == 0);
@@ -1062,7 +1231,7 @@ pub(crate) fn determine_page_size() -> u32 {
     }
 }
 
-pub(crate) fn page_size() -> u32 {
+pub fn page_size() -> u32 {
     unsafe { PAGE_SIZE }
 }
 

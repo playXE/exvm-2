@@ -5,14 +5,11 @@ use exvm::gc::GC;
 use exvm::heap::*;
 
 fn main() {
-    let mut h = Heap::new(4096 * 2);
+    init_page_size();
+    let mut h = Heap::new(page_size() as _);
     h.needs_gc = GCType::NewSpace;
     let mut gc = GC::new(h.val);
-    let num = HNumber::newf(&mut h, Tenure::New, 3.14);
-    let _num3 = HNil::new();
-    let _num2 = HObject::new_empty(&mut h, 2);
+    let s = "Hello!";
+    let num = HString::new(&mut h, Tenure::New, s.len(), Some(s));
     gc.collect_garbage(&num as *const _ as *mut _);
-    unsafe {
-        println!("{}", (*HValue::cast(_num2)).generation());
-    }
 }
