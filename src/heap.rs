@@ -15,8 +15,8 @@ pub struct Page {
 impl Page {
     #[inline]
     pub fn new(x: usize) -> Page {
-        let data = unsafe { malloc(x) }; //mmap(x, ProtType::Writable) as *mut u8;
-                                         //println!("Page ptr {:p}", data);
+        let data = mmap(x, ProtType::Writable) as *mut u8;
+        //println!("Page ptr {:p}", data);
 
         Page {
             size: x,
@@ -258,7 +258,7 @@ impl Space {
     pub fn clear(&mut self) {
         self.size = 0;
         for page in self.pages.iter() {
-            //munmap(page.data, page_size() as usize);
+            munmap(page.data, page_size() as usize);
         }
         self.pages.clear();
     }
