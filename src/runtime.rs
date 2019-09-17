@@ -12,7 +12,7 @@ pub unsafe extern "C" fn rt_lookup_property(
 
     let is_array = HValue::get_tag(obj) == HeapTag::Array;
 
-    let mut key_ptr;
+    let key_ptr;
     let mut numkey = 0;
     let mut hash = 0;
     if is_array {

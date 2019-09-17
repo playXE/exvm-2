@@ -1,10 +1,9 @@
 #![feature(const_fn)]
 #![feature(const_raw_ptr_to_usize_cast)]
+pub mod asm;
 pub mod gc;
 pub mod heap;
 pub mod runtime;
-pub mod x64;
-
 pub fn compute_hash(key: u64) -> u32 {
     let mut hash: u32 = 0;
     hash = hash.wrapping_add(key.wrapping_shr(32) as u32);

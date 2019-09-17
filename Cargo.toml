@@ -8,7 +8,18 @@ edition = "2018"
 
 [dependencies]
 libc = "0.2"
+capstone = "0.6"
+jazz-jit = {path = "jazz-jit"}
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser","memoryapi","errhandlingapi","sysinfoapi"] }
 kernel32-sys = "0.2"
+[profile.dev]
+opt-level = 0
+debug = true
+lto = false
+rpath = false
+debug-assertions = true
+codegen-units = 1
+panic = 'unwind'
+

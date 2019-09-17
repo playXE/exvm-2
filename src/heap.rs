@@ -1,7 +1,7 @@
 extern "C" {
     fn malloc(x: usize) -> *mut u8;
     fn free(x: *mut u8);
-    fn memset(ptr: *mut u8, val: i32, size: usize);
+    pub fn memset(ptr: *mut u8, val: i32, size: usize);
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
