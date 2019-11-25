@@ -405,8 +405,8 @@ impl HValue {
         }
     }
     #[inline]
-    pub const fn is_unboxed(addr: *mut u8) -> bool {
-        return unsafe { (addr as usize & 0x01) == 0 };
+    pub fn is_unboxed(addr: *mut u8) -> bool {
+        return (addr as usize & 0x01) == 0;
     }
     #[inline]
     pub const fn cast(addr: *mut u8) -> *mut HValue {
@@ -722,8 +722,8 @@ impl HString {
                 tenure,
                 length + 3 * std::mem::size_of::<usize>(),
             );
-            *(result.offset(Self::HASH_OFFSET) as *mut isize) = 0;
-            *(result.offset(Self::LENGTH_OFFSET) as *mut usize) = length;
+            (result.offset(Self::HASH_OFFSET) as *mut isize).write(0);
+            (result.offset(Self::LENGTH_OFFSET) as *mut usize).write(length);
             if let Some(value) = value {
                 std::ptr::copy_nonoverlapping(
                     value.as_bytes().as_ptr(),

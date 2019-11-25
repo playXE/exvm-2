@@ -85,9 +85,27 @@ use std::rc::Rc;
 pub struct Masm {
     relocation_info: Vec<Rc<RefCell<RelocationInfo>>>,
     asm: Assembler,
+    stubs: std::collections::HashMap<&'static str, *const u8>,
 }
 
 impl Masm {
+    pub fn new() -> Self {
+        Self {
+            relocation_info: vec![],
+            asm: Assembler::new(),
+            stubs: std::collections::HashMap::new(),
+        }
+    }
+    pub unsafe fn prologue(&mut self) {
+        self.push(RBP);
+        (**self).mov(true, RSP, RBP);
+    }
+
+    pub unsafe fn epilogue(&mut self, args: u16) {
+        (**self).mov(true, RBP, RSP);
+        self.pop(RBP);
+        emit_retq_imm(&mut self.asm, args * 8);
+    }
     pub unsafe fn relocate(&mut self, heap: &mut Heap) {
         for item in self.relocation_info.iter().cloned() {
             item.borrow().relocate(heap, &mut self.asm.data);
